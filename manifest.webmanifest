@@ -1,0 +1,10 @@
+{
+  "name": "ASF Patrocínio — Apoie o Surf Feminino",
+  "short_name": "ASF Patrocínio",
+  "description": "Cotas de patrocínio e parcerias de marcas com a Associação de Surf Feminino.",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#fff5ec",
+  "theme_color": "#ff4d8d",
+  "lang": "pt-BR"
+}
