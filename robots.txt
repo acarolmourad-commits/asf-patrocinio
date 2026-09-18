@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://acarolmourad-commits.github.io/asf-patrocinio/sitemap.xml
