@@ -1,0 +1,30 @@
+name: ASF — Monitor de Respostas de Parceria
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'   # a cada 6h
+  workflow_dispatch:        # execução manual
+
+permissions:
+  contents: read
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Instalar dependências
+        run: pip install google-api-python-client google-auth
+
+      - name: Verificar respostas e gerar follow-ups
+        env:
+          GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
+          GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
+          GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
+          AUTO_SEND: ${{ vars.AUTO_SEND }}
+        run: python scripts/monitor_respostas.py
