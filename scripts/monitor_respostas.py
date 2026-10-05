@@ -1,89 +1,95 @@
-"""ASF — Monitor de respostas de parceria.
+"""ASF — Monitor de respostas de parceria (via Composio API).
 
-Verifica a caixa do Gmail (asf.surffeminino@gmail.com) por respostas dos leads
-de prospecção, classifica a intenção (positiva / dúvida / reunião / negativa),
-gera uma resposta personalizada e cria um RASCUNHO de resposta na thread.
-Se a variável de repo AUTO_SEND=true, envia diretamente em vez de rascunho.
+Usa a conexão Gmail já existente no Composio (asf.surffeminino@gmail.com) —
+não precisa de OAuth próprio no Google Cloud.
 
-Secrets necessários (OAuth do Google Cloud com escopo gmail.modify):
-  GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REFRESH_TOKEN
+Fluxo a cada execução:
+1. GMAIL_FETCH_EMAILS: busca respostas dos 32 leads (desde 05/10/2026);
+2. Classifica intenção: positiva / reuniao / duvida / negativa;
+3. Gera resposta personalizada;
+4. GMAIL_CREATE_EMAIL_DRAFT na thread (padrão) ou GMAIL_SEND_EMAIL
+   se a variable AUTO_SEND=true.
+
+Configuração no repo:
+  Secret:   COMPOSIO_API_KEY
+  Variable: COMPOSIO_USER_ID (ex.: e-mail ou ID do usuário Composio; padrão 'default')
+  Variable: AUTO_SEND ('true' para envio automático)
 """
-import json, os, base64
-from email.mime.text import MIMEText
-from google.oauth2.credentials import Credentials
-from googleapiclient.discovery import build
+import json, os, requests
 
-SINCE = '2026/10/05'
+API = 'https://backend.composio.dev/api/v3'
+KEY = os.environ['COMPOSIO_API_KEY']
+USER = os.environ.get('COMPOSIO_USER_ID', 'default')
+AUTO_SEND = os.environ.get('AUTO_SEND', '').lower() == 'true'
 CC = 'asf.surffeminino@gmail.com'
+SINCE = '2026/10/05'
+
+H = {'x-api-key': KEY, 'Content-Type': 'application/json'}
 
 with open('data/leads.json') as f:
-    LEADS = json.load(f)  # [{"nome": ..., "email": ..., "segmento": ..., "status": "enviado"}]
+    LEADS = json.load(f)
 
-creds = Credentials(None,
-    refresh_token=os.environ['GMAIL_REFRESH_TOKEN'],
-    client_id=os.environ['GMAIL_CLIENT_ID'],
-    client_secret=os.environ['GMAIL_CLIENT_SECRET'],
-    token_uri='https://oauth2.googleapis.com/token')
-svc = build('gmail', 'v1', credentials=creds)
+POS = ['parceria', 'topamos', 'vamos conversar', 'interesse', 'adorei', 'adoramos', 'podemos']
+MEET = ['call', 'reunião', 'reuniao', 'agendar', 'horário', 'horario', 'whatsapp']
+NEG = ['não temos interesse', 'no momento não', 'infelizmente não', 'desculpa']
 
-POS = ['parceria', 'topamos', 'vamos conversar', 'interesse', 'adorei', 'adoramos', 'sim', 'podemos']
-MEET = ['call', 'reunião', 'agendar', 'conversa', 'horário', 'whatsapp']
-NEG = ['não temos interesse', 'no momento não', 'desculpa', 'infelizmente não']
+def composio(tool, args):
+    r = requests.post(f'{API}/tools/execute/{tool}',
+                      headers=H,
+                      json={'user_id': USER, 'arguments': args},
+                      timeout=60)
+    r.raise_for_status()
+    return r.json()
 
 def classify(text):
-    t = text.lower()
+    t = (text or '').lower()
     if any(k in t for k in NEG): return 'negativa'
     if any(k in t for k in MEET): return 'reuniao'
     if any(k in t for k in POS): return 'positiva'
     return 'duvida'
 
-def reply_body(lead, intent):
-    n = lead['nome']
+def reply_body(nome, intent):
     if intent == 'positiva':
-        return (f"Olá, equipe {n}!\n\nQue ótimo! Ficamos muito felizes com o interesse. "
+        return (f"Olá, equipe {nome}!\n\nQue ótimo! Ficamos muito felizes com o interesse. "
                 "Como próximo passo, sugerimos uma call rápida (15–20 min) para alinharmos "
                 "formato da parceria, benefícios para associadas ASF e cronograma. "
                 "Qual dia/horário funciona para vocês esta semana?\n\nAbraços,\nEquipe ASF")
     if intent == 'reuniao':
-        return (f"Olá, equipe {n}!\n\nPerfeito! Temos disponibilidade nos próximos dias. "
+        return (f"Olá, equipe {nome}!\n\nPerfeito! Temos disponibilidade nos próximos dias. "
                 "Podem indicar 2–3 horários? Em seguida enviamos o convite com o link da call.\n\nAbraços,\nEquipe ASF")
     if intent == 'duvida':
-        return (f"Olá, equipe {n}!\n\nObrigada pelo retorno! A ASF é a Associação de Surf Feminino — "
+        return (f"Olá, equipe {nome}!\n\nObrigada pelo retorno! A ASF é a Associação de Surf Feminino — "
                 "reunimos associadas em todo o Brasil e buscamos parcerias com benefícios mútuos: "
-                "divulgação da marca para nossa comunidade, presença em eventos e condições exclusivas "
-                "para associadas. Ficamos à disposição para detalhar em uma call rápida.\n\nAbraços,\nEquipe ASF")
-    return (f"Olá, equipe {n}!\n\nAgradecemos muito o retorno e a sinceridade. "
+                "divulgação da marca para nossa comunidade, presença em eventos e condições "
+                "exclusivas para associadas. Ficamos à disposição para uma call rápida.\n\nAbraços,\nEquipe ASF")
+    return (f"Olá, equipe {nome}!\n\nAgradecemos muito o retorno e a sinceridade. "
             "Se fizer sentido no futuro, estamos à disposição. Sucesso!\n\nAbraços,\nEquipe ASF")
-
-def make_msg(thread_id, to, subject, body, msg_id_header=None):
-    m = MIMEText(body)
-    m['to'], m['cc'], m['subject'] = to, CC, subject
-    if msg_id_header:
-        m['In-Reply-To'] = m['References'] = msg_id_header
-    raw = base64.urlsafe_b64encode(m.as_bytes()).decode()
-    return {'raw': raw, 'threadId': thread_id}
 
 report = []
 for lead in LEADS:
-    q = f"from:{lead['email']} after:{SINCE}"
-    res = svc.users().messages().list(userId='me', q=q).execute()
-    for msg in res.get('messages', []):
-        full = svc.users().messages().get(userId='me', id=msg['id'], format='full').execute()
-        headers = {h['name'].lower(): h['value'] for h in full['payload']['headers']}
-        snippet = full.get('snippet', '')
-        intent = classify(snippet)
-        subject = headers.get('subject', f"Parceria ASF x {lead['nome']}")
+    res = composio('GMAIL_FETCH_EMAILS', {
+        'query': f"from:{lead['email']} after:{SINCE}",
+        'max_results': 10, 'verbose': True})
+    msgs = (res.get('data') or {}).get('messages') or []
+    for m in msgs:
+        # ignora mensagens enviadas por nós
+        if CC in (m.get('sender') or ''):
+            continue
+        intent = classify(m.get('messageText') or m.get('snippet'))
+        subject = m.get('subject') or f"Parceria ASF x {lead['nome']}"
         if not subject.lower().startswith('re:'):
             subject = 'Re: ' + subject
-        body = reply_body(lead, intent)
-        payload = make_msg(full['threadId'], lead['email'], subject, body, headers.get('message-id'))
-        if os.environ.get('AUTO_SEND', '').lower() == 'true':
-            svc.users().messages().send(userId='me', body=payload).execute()
-            action = 'ENVIADO'
+        args = {'recipient_email': lead['email'], 'cc': [CC],
+                'body': reply_body(lead['nome'], intent),
+                'thread_id': m.get('threadId')}
+        if AUTO_SEND:
+            args['subject'] = subject
+            composio('GMAIL_SEND_EMAIL', args)
+            acao = 'ENVIADO'
         else:
-            svc.users().drafts().create(userId='me', body={'message': payload}).execute()
-            action = 'RASCUNHO'
-        report.append({'lead': lead['nome'], 'intent': intent, 'acao': action})
+            composio('GMAIL_CREATE_EMAIL_DRAFT', args)
+            acao = 'RASCUNHO'
+        report.append({'lead': lead['nome'], 'intent': intent, 'acao': acao})
 
 print(json.dumps(report, ensure_ascii=False, indent=2))
 if not report:
