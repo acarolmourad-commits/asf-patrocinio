@@ -1,21 +1,20 @@
 """ASF — Monitor de respostas de parceria (via Composio API).
 
-Usa a conexão Gmail já existente no Composio (asf.surffeminino@gmail.com) —
-não precisa de OAuth próprio no Google Cloud.
-
-Fluxo a cada execução:
-1. GMAIL_FETCH_EMAILS: busca respostas dos 32 leads (desde 05/10/2026);
-2. Classifica intenção: positiva / reuniao / duvida / negativa;
-3. Gera resposta personalizada;
-4. GMAIL_CREATE_EMAIL_DRAFT na thread (padrão) ou GMAIL_SEND_EMAIL
-   se a variable AUTO_SEND=true.
+PLAYBOOK DE NEGOCIAÇÃO (100% por e-mail — NUNCA sugerir WhatsApp):
+1. Resposta do lead → classifica intenção (positiva/reuniao/duvida/negativa);
+2. Positiva/dúvida → envia proposta completa (app ASF, logo no app, redes
+   sociais, período de 6 meses) + pede dados empresariais;
+3. Aceite → agradece, confirma benefício acordado e solicita dados para
+   contrato (razão social, CNPJ, responsável, endereço, e-mail/telefone);
+4. Dados recebidos → marcar lead como 'contrato_pendente' no relatório
+   (a geração do contrato usa o modelo no Notion CRM).
 
 Configuração no repo:
   Secret:   COMPOSIO_API_KEY
-  Variable: COMPOSIO_USER_ID (ex.: e-mail ou ID do usuário Composio; padrão 'default')
-  Variable: AUTO_SEND ('true' para envio automático)
+  Variable: COMPOSIO_USER_ID (padrão 'default')
+  Variable: AUTO_SEND ('true' = envio automático; padrão = rascunho)
 """
-import json, os, requests
+import json, os, re, requests
 
 API = 'https://backend.composio.dev/api/v3'
 KEY = os.environ['COMPOSIO_API_KEY']
@@ -29,9 +28,11 @@ H = {'x-api-key': KEY, 'Content-Type': 'application/json'}
 with open('data/leads.json') as f:
     LEADS = json.load(f)
 
-POS = ['parceria', 'topamos', 'vamos conversar', 'interesse', 'adorei', 'adoramos', 'podemos']
-MEET = ['call', 'reunião', 'reuniao', 'agendar', 'horário', 'horario', 'whatsapp']
+POS = ['parceria', 'topamos', 'vamos conversar', 'interesse', 'adorei', 'adoramos', 'podemos', 'informações', 'informacoes']
+MEET = ['call', 'reunião', 'reuniao', 'agendar', 'horário', 'horario']
+ACCEPT = ['aceito', 'aceitamos', 'fechado', 'concordo', 'concordamos', 'vamos fechar', 'assinamos', 'segue os dados', 'seguem os dados']
 NEG = ['não temos interesse', 'no momento não', 'infelizmente não', 'desculpa']
+CNPJ = re.compile(r'\d{2}[.]?\d{3}[.]?\d{3}[/]?\d{4}[-]?\d{2}')
 
 def composio(tool, args):
     r = requests.post(f'{API}/tools/execute/{tool}',
@@ -44,24 +45,46 @@ def composio(tool, args):
 def classify(text):
     t = (text or '').lower()
     if any(k in t for k in NEG): return 'negativa'
+    if CNPJ.search(t) or any(k in t for k in ACCEPT): return 'aceite'
     if any(k in t for k in MEET): return 'reuniao'
     if any(k in t for k in POS): return 'positiva'
     return 'duvida'
 
+APP_TXT = ("A ASF — Associação Surf Feminino (asf.surf) é a rede digital das mulheres que surfam no "
+           "Brasil. Nosso app próprio reúne guia de praias, previsão de ondas, checklist de surf, "
+           "diário de sessões, ranking da comunidade e a seção Parceiras & Benefícios, onde a logo "
+           "da sua marca fica exposta de forma permanente para toda a base de associadas.")
+
+def proposta(nome):
+    return (f"Olá, equipe {nome}!\n\n{APP_TXT}\n\n"
+            "**PROPOSTA DE PARCERIA**\n\nO que a ASF oferece:\n"
+            "1. Logo da marca em destaque na seção Parceiras & Benefícios do app ASF;\n"
+            "2. Divulgação nas nossas redes sociais (post de lançamento + menções mensais);\n"
+            "3. Indicação ativa à comunidade de associadas (app, e-mail e eventos).\n\n"
+            "O que pedimos em contrapartida:\n"
+            "1. Benefício exclusivo para associadas ASF (desconto/condição especial);\n"
+            "2. Divulgação da ASF nos canais da marca;\n"
+            "3. Ação ou conteúdo conjunto mensal (formato a combinar).\n\n"
+            "PERÍODO: 6 meses, renovável automaticamente; rescisão com 30 dias de aviso, sem multa.\n\n"
+            "Se concordarem, o próximo passo é o contrato simples. Para isso, pedimos:\n"
+            "- Razão social e CNPJ\n- Nome do responsável legal\n- Endereço comercial\n"
+            "- E-mail e telefone oficiais\n\nPreferimos seguir por e-mail para manter tudo documentado.\n\n"
+            "Abraços,\nCarol — ASF\nasf.surffeminino@gmail.com | asf.surf")
+
+def aceite(nome):
+    return (f"Olá, equipe {nome}!\n\nQue notícia ótima — parceria aceita! 🎉\n\n"
+            "Para formalizarmos, seguiremos com um contrato simples de parceria (vigência de 6 meses, "
+            "renovável, sem multa rescisória). Por favor, confirmem os dados empresariais:\n"
+            "- Razão social e CNPJ\n- Nome do responsável legal\n- Endereço comercial\n"
+            "- E-mail e telefone oficiais\n"
+            "- Benefício acordado para associadas ASF (ex.: % de desconto, cupom, condição)\n\n"
+            "Assim que recebermos, enviamos o contrato para assinatura e já preparamos o post de "
+            "lançamento da parceria nas nossas redes + a inclusão da logo no app.\n\n"
+            "Abraços,\nCarol — ASF")
+
 def reply_body(nome, intent):
-    if intent == 'positiva':
-        return (f"Olá, equipe {nome}!\n\nQue ótimo! Ficamos muito felizes com o interesse. "
-                "Como próximo passo, sugerimos uma call rápida (15–20 min) para alinharmos "
-                "formato da parceria, benefícios para associadas ASF e cronograma. "
-                "Qual dia/horário funciona para vocês esta semana?\n\nAbraços,\nEquipe ASF")
-    if intent == 'reuniao':
-        return (f"Olá, equipe {nome}!\n\nPerfeito! Temos disponibilidade nos próximos dias. "
-                "Podem indicar 2–3 horários? Em seguida enviamos o convite com o link da call.\n\nAbraços,\nEquipe ASF")
-    if intent == 'duvida':
-        return (f"Olá, equipe {nome}!\n\nObrigada pelo retorno! A ASF é a Associação de Surf Feminino — "
-                "reunimos associadas em todo o Brasil e buscamos parcerias com benefícios mútuos: "
-                "divulgação da marca para nossa comunidade, presença em eventos e condições "
-                "exclusivas para associadas. Ficamos à disposição para uma call rápida.\n\nAbraços,\nEquipe ASF")
+    if intent == 'aceite': return aceite(nome)
+    if intent in ('positiva', 'reuniao', 'duvida'): return proposta(nome)
     return (f"Olá, equipe {nome}!\n\nAgradecemos muito o retorno e a sinceridade. "
             "Se fizer sentido no futuro, estamos à disposição. Sucesso!\n\nAbraços,\nEquipe ASF")
 
@@ -72,7 +95,6 @@ for lead in LEADS:
         'max_results': 10, 'verbose': True})
     msgs = (res.get('data') or {}).get('messages') or []
     for m in msgs:
-        # ignora mensagens enviadas por nós
         if CC in (m.get('sender') or ''):
             continue
         intent = classify(m.get('messageText') or m.get('snippet'))
@@ -89,7 +111,8 @@ for lead in LEADS:
         else:
             composio('GMAIL_CREATE_EMAIL_DRAFT', args)
             acao = 'RASCUNHO'
-        report.append({'lead': lead['nome'], 'intent': intent, 'acao': acao})
+        report.append({'lead': lead['nome'], 'intent': intent, 'acao': acao,
+                       'proximo': 'gerar_contrato' if intent == 'aceite' else 'aguardar'})
 
 print(json.dumps(report, ensure_ascii=False, indent=2))
 if not report:
