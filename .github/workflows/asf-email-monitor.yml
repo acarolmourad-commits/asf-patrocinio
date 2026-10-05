@@ -6,7 +6,7 @@ on:
   workflow_dispatch:        # execução manual
 
 permissions:
-  contents: read
+  contents: write   # necessário para persistir data/state.json
 
 jobs:
   monitor:
@@ -27,3 +27,11 @@ jobs:
           COMPOSIO_USER_ID: ${{ vars.COMPOSIO_USER_ID }}
           AUTO_SEND: ${{ vars.AUTO_SEND }}
         run: python scripts/monitor_respostas.py
+
+      - name: Persistir estado (dedup) e relatório
+        run: |
+          git config user.name 'asf-monitor-bot'
+          git config user.email 'asf.surffeminino@gmail.com'
+          git add data/state.json data/relatorio.json
+          git diff --cached --quiet || git commit -m 'chore: estado do monitor de parcerias [skip ci]'
+          git push
